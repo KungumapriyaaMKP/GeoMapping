@@ -1,0 +1,35 @@
+import ee
+import geemap
+
+# Initialize
+ee.Initialize(project='geosentinels-472805')
+
+# Create map
+Map = geemap.Map(center=[22, 78], zoom=5)
+
+# Load MP boundary
+mp = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1") \
+        .filter(ee.Filter.eq('ADM1_NAME', 'Madhya Pradesh'))
+
+# Load Sentinel-2 image collection and filter by MP
+sentinel = ee.ImageCollection("COPERNICUS/S2_SR") \
+              .filterBounds(mp) \
+              .filterDate("2023-01-01", "2023-03-31") \
+              .median() \
+              .clip(mp)
+
+# True color visualization
+true_color_vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000}
+Map.addLayer(sentinel, true_color_vis, "True Color")
+
+# NDVI layer (Vegetation)
+ndvi = sentinel.normalizedDifference(["B8", "B4"]).rename("NDVI")
+ndvi_vis = {"min": 0, "max": 1, "palette": ["white", "green"]}
+Map.addLayer(ndvi, ndvi_vis, "NDVI")
+
+# Clip MP boundary as overlay
+Map.addLayer(mp.style(color='black', fillColor='00000000'), {}, "MP Boundary")
+
+# Export HTML
+Map.to_html("mp_land_classification.html")
+print("Map exported! Open 'mp_land_classification.html' in browser to visualize.")
