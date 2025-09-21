@@ -1,35 +1,65 @@
+# map.py
 import ee
 import geemap
 
-# Initialize
+# 1️⃣ Initialize Earth Engine
 ee.Initialize(project='geosentinels-472805')
 
-# Create map
-Map = geemap.Map(center=[22, 78], zoom=5)
+# 2️⃣ Create map
+Map = geemap.Map(center=[23.2599, 77.4126], zoom=6)
 
-# Load MP boundary
-mp = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1") \
-        .filter(ee.Filter.eq('ADM1_NAME', 'Madhya Pradesh'))
+# 3️⃣ Get Madhya Pradesh boundary
+india = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1")
+mp = india.filter(ee.Filter.eq('ADM1_NAME', 'Madhya Pradesh'))
+print("Number of features in MP:", mp.size().getInfo())
 
-# Load Sentinel-2 image collection and filter by MP
-sentinel = ee.ImageCollection("COPERNICUS/S2_SR") \
-              .filterBounds(mp) \
-              .filterDate("2023-01-01", "2023-03-31") \
-              .median() \
-              .clip(mp)
+# 4️⃣ Load Sentinel-2 SR images for last 6 months
+sentinel = (ee.ImageCollection('COPERNICUS/S2_SR')
+            .filterBounds(mp)
+            .filterDate('2025-03-01', '2025-09-20')
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+            .median()
+            .clip(mp))
 
-# True color visualization
-true_color_vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000}
-Map.addLayer(sentinel, true_color_vis, "True Color")
+# 5️⃣ Compute indices
+ndvi = sentinel.normalizedDifference(['B8', 'B4']).rename('NDVI')
+ndwi = sentinel.normalizedDifference(['B3', 'B8']).rename('NDWI')
+ndbi = sentinel.normalizedDifference(['B11', 'B8']).rename('NDBI')
 
-# NDVI layer (Vegetation)
-ndvi = sentinel.normalizedDifference(["B8", "B4"]).rename("NDVI")
-ndvi_vis = {"min": 0, "max": 1, "palette": ["white", "green"]}
-Map.addLayer(ndvi, ndvi_vis, "NDVI")
+# 6️⃣ Land classification using thresholds
+# NDVI > 0.6 → Forest
+# NDVI 0.3-0.6 → Agriculture
+# NDWI > 0.2 → Water
+# NDBI > 0.2 and NDVI < 0.3 → Homesteads / built-up
+forest = ndvi.gt(0.6)
+agri = ndvi.gt(0.3).And(ndvi.lte(0.6))
+water = ndwi.gt(0.2)
+built_up = ndbi.gt(0.2).And(ndvi.lt(0.3))
 
-# Clip MP boundary as overlay
-Map.addLayer(mp.style(color='black', fillColor='00000000'), {}, "MP Boundary")
+# Combine layers into one image
+land_map = ee.Image(0)\
+    .where(forest, 1)\
+    .where(agri, 2)\
+    .where(water, 3)\
+    .where(built_up, 4)
 
-# Export HTML
-Map.to_html("mp_land_classification.html")
-print("Map exported! Open 'mp_land_classification.html' in browser to visualize.")
+# Visualization palette
+land_vis = {
+    'min': 0,
+    'max': 4,
+    'palette': ['white', 'darkgreen', 'yellow', 'blue', 'red'], 
+    # 0=none, 1=forest, 2=agriculture, 3=water, 4=built-up
+}
+
+# 7️⃣ Add layers to map
+Map.addLayer(sentinel, {"bands": ["B4", "B3", "B2"], "min":0, "max":3000}, "True Color")
+Map.addLayer(ndvi, {'min':0, 'max':1, 'palette':['white', 'green']}, 'NDVI')
+Map.addLayer(ndwi, {'min':-1, 'max':1, 'palette':['white', 'blue']}, 'NDWI')
+Map.addLayer(ndbi, {'min':-1, 'max':1, 'palette':['white', 'red']}, 'NDBI')
+Map.addLayer(land_map, land_vis, 'Land Classification')
+
+# 8️⃣ Export interactive map
+Map.to_html('mp_land_classification.html')
+
+print("HTML map saved as mp_land_classification.html")
+a
