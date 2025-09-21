@@ -1,0 +1,72 @@
+# 1️⃣ Install required packages
+!pip install geemap earthengine-api folium
+
+# 2️⃣ Import packages
+import ee
+import geemap
+import folium
+
+# 3️⃣ Authenticate and initialize Earth Engine
+ee.Authenticate()
+ee.Initialize(project='geosentinels-472805')  # Use your project ID
+
+# 4️⃣ Create an interactive map centered on Tripura
+Map = geemap.Map(center=[23.75, 91.25], zoom=8)
+
+# 5️⃣ Load administrative boundaries (FAO GAUL dataset)
+districts = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level2")  # level2 = districts
+
+# Filter for Tripura
+tripura = districts.filter(ee.Filter.eq("ADM1_NAME", "Tripura"))
+
+print("Number of districts in Tripura:", tripura.size().getInfo())
+
+# 6️⃣ Load state boundary (for reference)
+states = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1")
+tripura_state = states.filter(ee.Filter.eq("ADM1_NAME", "Tripura"))
+
+# Add Tripura state boundary in red
+Map.addLayer(tripura_state, {"color": "red"}, "Tripura State Boundary")
+
+# Add districts in yellow
+Map.addLayer(tripura, {"color": "blue"}, "Tripura Districts")
+
+# 7️⃣ Load Sentinel-2 Surface Reflectance imagery (2023)
+sentinel = (
+    ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterBounds(tripura_state)
+    .filterDate("2023-01-01", "2023-12-31")
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))  # less cloudy images
+    .median()
+    .clip(tripura_state)
+)
+
+# Add True Color visualization (RGB)
+Map.addLayer(sentinel, {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000}, "Sentinel-2 True Color")
+
+# 8️⃣ Compute NDVI for land classification
+ndvi = sentinel.normalizedDifference(["B8", "B4"]).rename("NDVI")
+
+# Color palette for NDVI: Red=low vegetation, Green=high vegetation
+ndvi_vis = {"min": 0, "max": 1, "palette": ["brown", "yellow", "green"]}
+
+Map.addLayer(ndvi, ndvi_vis, "NDVI (Land Classification)")
+
+# 9️⃣ Display interactive map
+Map
+
+#  🔟 Optional: Export NDVI to GeoTIFF (auto-download)
+task = ee.batch.Export.image.toDrive(
+    image=ndvi.clip(tripura_state),
+    description="Tripura_NDVI",
+    folder="EarthEngine",
+    fileNamePrefix="tripura_ndvi",
+    scale=30,
+    region=tripura_state.geometry()
+)
+task.start()
+print("NDVI export started! Check your Google Drive 'EarthEngine' folder after a few minutes.")
+Map.to_html("tripura_map.html")
+from google.colab import files
+files.download("tripura_map.html")
+
