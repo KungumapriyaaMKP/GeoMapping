@@ -1,0 +1,143 @@
+import streamlit as st
+import ee
+import geemap.foliumap as geemap
+import folium
+
+# ----------------- Streamlit UI -----------------
+st.set_page_config(page_title="FRA Dashboard Tripura", layout="wide")
+st.title("FRA Dashboard Tripura")  # force heading
+
+# ----------------- Sidebar Filters -----------------
+st.sidebar.header("Layer Filters")
+show_state = st.sidebar.checkbox("Show State Boundary", True)
+show_districts = st.sidebar.checkbox("Show District Boundaries", True)
+show_ndvi = st.sidebar.checkbox("Show NDVI Classification", True)
+show_community = st.sidebar.checkbox("Show Community Patches", True)
+
+# ----------------- EE Init -----------------
+ee.Initialize(project='geosentinels-472805')
+
+# ----------------- Load Boundaries -----------------
+state_fc = ee.FeatureCollection("FAO/GAUL/2015/level1").filter(
+    ee.Filter.eq('ADM1_NAME', 'Tripura')
+)
+districts_fc = ee.FeatureCollection("FAO/GAUL/2015/level2").filter(
+    ee.Filter.eq('ADM1_NAME', 'Tripura')
+)
+
+# ----------------- Cloud Masking Function -----------------
+def mask_s2_clouds(image):
+    qa = image.select('QA60')
+    cloud_bit = 1 << 10
+    cirrus_bit = 1 << 11
+    mask = qa.bitwiseAnd(cloud_bit).eq(0).And(qa.bitwiseAnd(cirrus_bit).eq(0))
+    return image.updateMask(mask).divide(10000)
+
+# ----------------- Prepare NDVI Composite -----------------
+collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterBounds(state_fc.geometry())
+    .filterDate('2023-01-01', '2023-12-31')
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+    .map(mask_s2_clouds)
+)
+
+def safe_median(comp):
+    return ee.Algorithms.If(
+        comp.size().eq(0),
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterBounds(state_fc.geometry())
+        .filterDate('2022-01-01', '2024-12-31')
+        .map(mask_s2_clouds)
+        .median(),
+        comp.median()
+    )
+
+median_image = ee.Image(safe_median(collection)).select('B4','B8')
+ndvi = median_image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+
+# ----------------- NDVI Classification -----------------
+dense = ndvi.gte(0.5)
+agri = ndvi.gt(0.3).And(ndvi.lt(0.5))
+barren = ndvi.lte(0.3)
+
+classified = dense.multiply(1).add(agri.multiply(2)).add(barren.multiply(3))
+
+vis_params = {'min': 1, 'max': 3,
+              'palette': ['006400', 'FFFF00', '87CEEB']}
+
+# ----------------- Community Patches -----------------
+poly_jamatia = ee.Geometry.Polygon([[[91.3, 24.0], [91.35, 24.0],
+                                    [91.35, 23.95], [91.3, 23.95]]])
+poly_chakma = ee.Geometry.Polygon([[[91.4, 23.8], [91.45, 23.8],
+                                   [91.45, 23.75], [91.4, 23.75]]])
+poly_noatia = ee.Geometry.Polygon([[[91.5, 23.7], [91.55, 23.7],
+                                   [91.55, 23.65], [91.5, 23.65]]])
+
+features = [
+    ee.Feature(poly_jamatia, {'community': 'Jamatia'}),
+    ee.Feature(poly_chakma, {'community': 'Chakma'}),
+    ee.Feature(poly_noatia, {'community': 'Noatia'})
+]
+community_fc = ee.FeatureCollection(features)
+community_style = community_fc.style(color='purple', fillColor='#dda0dd', width=1)
+
+# ----------------- Build Map -----------------
+Map = geemap.Map(center=[23.8, 91.5], zoom=8)
+
+if show_state:
+    Map.addLayer(state_fc.style(color='black', fillColor=None, width=2), {}, "State Boundary")
+if show_districts:
+    Map.addLayer(districts_fc.style(color='blue', fillColor=None, width=1), {}, "District Boundaries")
+if show_ndvi:
+    Map.addLayer(classified.clip(state_fc), vis_params, "NDVI Landforms")
+if show_community:
+    Map.addLayer(community_style, {}, "Community Patches")
+
+# ----------------- Legends -----------------
+legend_html = """
+<div style="position: fixed; bottom: 50px; left: 10px; width: 200px; z-index:9999;
+background-color:white; border:2px solid grey; padding:10px; font-size:14px;">
+<b>Landforms (NDVI)</b><br>
+<i style="background:#006400;width:15px;height:15px;float:left;margin-right:5px;"></i> Dense Forest <br>
+<i style="background:#FFFF00;width:15px;height:15px;float:left;margin-right:5px;"></i> Agriculture <br>
+<i style="background:#87CEEB;width:15px;height:15px;float:left;margin-right:5px;"></i> Barren/Water
+</div>"""
+Map.get_root().html.add_child(folium.Element(legend_html))
+
+community_legend_html = """
+<div style="position: fixed; bottom: 180px; left: 10px; width: 200px; z-index:9999;
+background-color:white; border:2px solid grey; padding:10px; font-size:14px;">
+<b>Communities</b><br>
+<i style="background:#dda0dd;width:15px;height:15px;float:left;margin-right:5px;"></i> Jamatia<br>
+<i style="background:#dda0dd;width:15px;height:15px;float:left;margin-right:5px;"></i> Chakma<br>
+<i style="background:#dda0dd;width:15px;height:15px;float:left;margin-right:5px;"></i> Noatia
+</div>"""
+Map.get_root().html.add_child(folium.Element(community_legend_html))
+
+# ----------------- Hover Tooltips -----------------
+districts_geojson = geemap.ee_to_geojson(districts_fc)
+folium.GeoJson(
+    districts_geojson,
+    name='District Names',
+    style_function=lambda f: {'color':'blue', 'weight':1, 'fillOpacity':0},
+    tooltip=folium.GeoJsonTooltip(
+        fields=['ADM2_NAME', 'ADM1_NAME'],
+        aliases=['District:', 'State:'],
+        sticky=True
+    )
+).add_to(Map)
+
+community_geojson = geemap.ee_to_geojson(community_fc)
+folium.GeoJson(
+    community_geojson,
+    name='Community Names',
+    style_function=lambda f: {'color':'purple', 'weight':1, 'fillOpacity':0.4},
+    tooltip=folium.GeoJsonTooltip(
+        fields=['community'],
+        aliases=['Community:'],
+        sticky=True
+    )
+).add_to(Map)
+
+# ----------------- Display Map -----------------
+Map.to_streamlit(height=700)
